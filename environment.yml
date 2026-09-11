@@ -1,0 +1,15 @@
+name: ZhiSeek
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - sentence-transformers
+      - umap-learn
+      - hdbscan
+      - httpx
+      - fastapi
+      - uvicorn
+      - python-dotenv
+      - pytest

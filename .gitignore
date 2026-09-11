@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 凭证与本地配置
+.env
+
+# 数据缓存（可再生，不入库）
+data/cache/
+
+# 模型缓存
+.cache/
+huggingface/
+
+# 前端
+frontend/node_modules/
+frontend/.next/
+
+# 临时文件
+.tmp/

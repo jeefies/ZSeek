@@ -1,0 +1,54 @@
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap");
+@import "tailwindcss";
+
+/* ===== 知寻设计令牌（知寻ZhiSeek-UI设计规范.md）===== */
+@theme {
+  --color-base: #0b0e14;      /* bg-base 页面底色 */
+  --color-panel: #141922;     /* bg-panel 卡片/面板 */
+  --color-line: #232a38;      /* border 全站唯一线色 */
+  --color-ink: #e6e9ef;       /* text-primary */
+  --color-dim: #7a8499;       /* text-secondary */
+  --color-dot: #3a4356;       /* dot-default 普通散点 */
+  --color-gold: #e8b84b;      /* pearl-gold 唯一高饱和色 */
+  --color-paper: #faf7f2;     /* 原文阅读卡片纸感白 */
+  --color-paperink: #1f2328;  /* 纸面墨字 */
+  --color-warn: #a65b5b;      /* 簇色借用：错误/负值 */
+
+  --font-sans: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
+
+  /* 字号五档阶梯：12 / 14 / 16 / 20 / 28 */
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-base: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-base font-sans text-ink antialiased;
+  overflow: hidden; /* 全站不允许页面滚动 */
+}
+
+/* 全站仅 3 个动效之 ①②③ 之外的循环动画：仅遗珠呼吸光 */
+@keyframes breathe {
+  0%, 100% { border-color: rgba(232, 184, 75, 0.35); box-shadow: 0 0 0 0 rgba(232, 184, 75, 0); }
+  50% { border-color: rgba(232, 184, 75, 0.95); box-shadow: 0 0 14px 0 rgba(232, 184, 75, 0.35); }
+}
+.animate-breathe { animation: breathe 2s ease-in-out infinite; }
+
+/* 仪器日志光标（非循环装饰，属状态指示） */
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.animate-blink { animation: blink 1s step-end infinite; }
+
+/* 深色滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #232a38; border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+/* 纸感弹层内的浅色滚动条 */
+.paper-scroll::-webkit-scrollbar-thumb { background: #d8d2c4; }
