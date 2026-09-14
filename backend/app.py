@@ -62,6 +62,7 @@ JOB_SEQ = itertools.count(1)
 class AnalyzeReq(BaseModel):
     title: str
     question_url: str | None = None
+    include_answers: list[dict] | None = None  # 主动注入的回答（个人遗珠：低赞回答不进搜索样本）
 
 
 def _stage_progress(key: str) -> tuple[int, str | None]:
@@ -174,7 +175,8 @@ def analyze(req: AnalyzeReq) -> dict:
                     return
                 JOBS[key]["status"] = "running"
             try:
-                pipeline_run(req.title, req.question_url or None, topn=10, force=False, no_llm=False)
+                pipeline_run(req.title, req.question_url or None, topn=10, force=False, no_llm=False,
+                             include_answers=req.include_answers or None)
                 JOBS[key]["status"] = "done"
             except BaseException as e:  # noqa: BLE001 - 含 SystemExit
                 JOBS[key]["status"] = "error"

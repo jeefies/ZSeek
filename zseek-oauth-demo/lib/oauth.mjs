@@ -234,7 +234,7 @@ export function createOAuth(config) {
 
   const topicKey = (title) => createHash('sha1').update(String(title), 'utf8').digest('hex').slice(0, 12);
 
-  async function personal(request, response, analyze = []) {
+  async function personal(request, response, analyze = [], force = false) {
     const current = session(request, response);
     if (!current.token) throw Object.assign(new Error('请先完成知乎账号授权'), { code: 'LOGIN_REQUIRED' });
     const { accessSecret } = await credentials();
@@ -256,6 +256,10 @@ export function createOAuth(config) {
         if (page.length < 20) break;
       }
       console.error(`[personal] contents: Code=${lastCode} 原始=${items.length} 条，URL 样例=${items.slice(0, 3).map((it) => String(it.Url).slice(0, 60)).join(' | ') || '无'}，标题样例=${items.slice(0, 3).map((it) => String(it.Title || '(空)').slice(0, 40)).join(' | ') || '无'}`);
+      if (items[0]) {
+        const t = items[0].ContentText || items[0].Excerpt || items[0].Content || '';
+        console.error(`[personal] contents 首条字段: ${Object.keys(items[0]).join(',')}；文本字段长度=${String(t).length}`);
+      }
       if (items.length) {
         cached = { at: Date.now(), items: items.slice(0, 30) };
         contentsCache.set(current.id, cached);  // 空结果不缓存，便于重试
@@ -279,7 +283,8 @@ export function createOAuth(config) {
         if (ma) { aid = ma[1]; qid = mq ? mq[1] : `a${aid}`; }
       }
       return qid && aid
-        ? { qid, aid, url: it.Url, title: it.Title || '', likes: it.LikeCount ?? 0, createdAt: it.CreatedAt ?? 0 }
+        ? { qid, aid, url: it.Url, title: it.Title || '', likes: it.LikeCount ?? 0, createdAt: it.CreatedAt ?? 0,
+            text: String(it.ContentText || it.Excerpt || it.Content || it.Summary || '') }
         : null;
     });
     const answers = parsed.filter(Boolean);
@@ -303,7 +308,8 @@ export function createOAuth(config) {
       const key = topicKey(q.title);
       let res;
       try { res = await fetch(`${ZSEEK_BACKEND}/api/result/${key}`); } catch { res = { ok: false, status: 0 }; }
-      if (res.ok) {
+      const shouldTrigger = want.has(q.qid) && !mineTriggered.has(q.qid) && (res.status === 404 || force);
+      if (res.ok && !shouldTrigger) {
         const report = await res.json();
         const pool = (report.answers || []).filter((x) => x.underestimate_index != null);
         const n = pool.length;
@@ -323,15 +329,23 @@ export function createOAuth(config) {
           };
         });
         questions.push({ qid: q.qid, title: q.title, url: q.url, key, status: 'done', sample_size: report.sample_size ?? n, mine });
-      } else if (res.status === 404) {
-        // 未缓存：只有用户勾选才触发分析（后端按 key 幂等去重，重复触发安全）
-        if (want.has(q.qid) && !mineTriggered.has(q.qid)) {
+      } else if (res.status === 404 || shouldTrigger) {
+        // 未缓存（或 force 重测）：勾选/按钮触发分析（后端按 key 幂等去重，重复触发安全）
+        if (shouldTrigger) {
           try {
             // 仅当 qid 是真实问题 id 时才传 question_url（短链回答无问题 id，枚举通道会 10001）
             const numericQid = /^\d+$/.test(q.qid);
+            // 主动注入本人回答：低赞回答常不进搜索/枚举样本，带赞数与全文以「曝光通道」身份参与 U 判定
             const ar = await fetch(`${ZSEEK_BACKEND}/api/analyze`, {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title: q.title, question_url: numericQid ? `https://www.zhihu.com/question/${q.qid}` : undefined }),
+              body: JSON.stringify({
+                title: q.title,
+                question_url: numericQid ? `https://www.zhihu.com/question/${q.qid}` : undefined,
+                include_answers: q.mine.map((a) => ({
+                  content_id: `mine_${a.aid}`, url: a.url, text: a.text,
+                  votes: a.likes, author: current.profile?.name || '我', edit_time: a.createdAt,
+                })),
+              }),
             });
             let arStatus = 'queued';
             try { arStatus = (await ar.json()).status || 'queued'; } catch { /* 保持 queued */ }

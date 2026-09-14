@@ -27,6 +27,7 @@ interface MyAnswer {
 
 interface PersonalQuestion {
   qid: string;
+  key: string;
   title: string;
   url: string;
   status: "done" | "running" | "queued" | "pending" | "error";
@@ -53,7 +54,15 @@ interface PersonalReport {
   questions: PersonalQuestion[];
 }
 
-export default function PersonalBoard() {
+export default function PersonalBoard({
+  onOpenTopic,
+  onOpenAnswer,
+}: {
+  /** 点击话题标题：打开该话题的分析界面（而非知乎） */
+  onOpenTopic?: (title: string, key: string) => void;
+  /** 点击「我的回答」：打开该回答的详细分析（主张拆解弹层） */
+  onOpenAnswer?: (title: string, key: string, aid: string) => void;
+}) {
   const [status, setStatus] = useState<OauthStatus | null>(null);
   const [statusErr, setStatusErr] = useState(false);
   const [report, setReport] = useState<PersonalReport | null>(null);
@@ -64,13 +73,13 @@ export default function PersonalBoard() {
   const etaRef = useRef<{ key: string; t: number; done: number } | null>(null);
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadReport = useCallback(async (analyze: string[] = [], isPoll = false) => {
+  const loadReport = useCallback(async (analyze: string[] = [], isPoll = false, force = false) => {
     if (!isPoll) setLoading(true);
     try {
       const res = await fetch("/api/oauth/personal-u", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analyze }),
+        body: JSON.stringify({ analyze, force }),
       });
       const payload = await res.json();
       if (!res.ok || payload.ok === false) throw new Error(payload.error?.message || "报告生成失败");
@@ -217,13 +226,32 @@ export default function PersonalBoard() {
                       title="勾选后分析此问题"
                     />
                   )}
+                  {onOpenTopic ? (
+                    <button
+                      onClick={() => onOpenTopic(q.title, q.key)}
+                      title="打开该话题的分析"
+                      className="min-w-0 flex-1 truncate text-left text-ink hover:text-gold"
+                    >
+                      {q.title}
+                    </button>
+                  ) : (
+                    <a
+                      href={q.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 flex-1 truncate text-ink hover:text-gold"
+                    >
+                      {q.title}
+                    </a>
+                  )}
                   <a
                     href={q.url}
                     target="_blank"
                     rel="noreferrer"
-                    className="min-w-0 flex-1 truncate text-ink hover:text-gold"
+                    title="在知乎打开"
+                    className="shrink-0 text-[10px] text-dim hover:text-gold"
                   >
-                    {q.title}
+                    ↗
                   </a>
                   {q.status === "running" ? (
                     <span className="shrink-0 font-mono text-[10px] text-gold">
@@ -254,8 +282,27 @@ export default function PersonalBoard() {
                     return (
                       <div key={m.aid} className="mt-1.5 border-t border-line pt-1.5">
                         <div className="flex items-center gap-2 text-[11px]">
-                          <a href={m.url} target="_blank" rel="noreferrer" className="shrink-0 text-gold hover:underline">
-                            我的回答
+                          {onOpenAnswer ? (
+                            <button
+                              onClick={() => onOpenAnswer(q.title, q.key, m.aid)}
+                              title="查看这篇回答的详细分析"
+                              className="shrink-0 text-gold hover:underline"
+                            >
+                              我的回答
+                            </button>
+                          ) : (
+                            <a href={m.url} target="_blank" rel="noreferrer" className="shrink-0 text-gold hover:underline">
+                              我的回答
+                            </a>
+                          )}
+                          <a
+                            href={m.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="在知乎打开"
+                            className="shrink-0 text-[10px] text-dim hover:text-gold"
+                          >
+                            ↗
                           </a>
                           {(m.badges ?? []).map((b) => (
                             <span
@@ -293,9 +340,19 @@ export default function PersonalBoard() {
                     );
                   })}
                 {q.status === "done" && q.mine.every((m) => !m.matched) && (
-                  <p className="mt-1 border-t border-line pt-1 text-[10px] text-dim">
-                    你的回答不在本次样本中（抽样未覆盖或赞同数过低未入榜）
-                  </p>
+                  <div className="mt-1 flex items-center gap-2 border-t border-line pt-1">
+                    <p className="text-[10px] leading-4 text-dim">
+                      你的回答不在本次样本中（抽样未覆盖或赞同数过低未入榜）
+                    </p>
+                    <button
+                      onClick={() => void loadReport([q.qid], false, true)}
+                      disabled={loading}
+                      className="ml-auto shrink-0 rounded border border-gold/60 px-2 py-0.5 text-[10px] text-gold hover:bg-gold/10 disabled:opacity-40"
+                      title="把你的回答注入样本，重新拆主张并全量重跑评分"
+                    >
+                      {loading ? "注入中…" : "注入我的回答重测"}
+                    </button>
+                  </div>
                 )}
               </div>
             ))}

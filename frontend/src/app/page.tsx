@@ -56,8 +56,8 @@ export default function Home() {
       .catch(() => {}); // demo 服务不可用时保持「测测我的遗珠」
   }, [view]);
 
-  const analyze = async () => {
-    const t = title.trim();
+  const runAnalyze = async (rawTitle: string) => {
+    const t = rawTitle.trim();
     if (!t || running) return;
     stopEvents();
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -121,6 +121,8 @@ export default function Home() {
     }
   };
 
+  const analyze = () => runAnalyze(title);
+
   const loadTopic = async (key: string) => {
     try {
       setResult(await fetchResult(key));
@@ -129,8 +131,31 @@ export default function Home() {
       setArchiveId(null);
       setLens("info");
       setView("dashboard");
+      return true;
     } catch {
       /* 缓存损坏则忽略 */
+      return false;
+    }
+  };
+
+  /** 个人报告点击话题标题：缓存命中直达报告，否则走分析流程 */
+  const openTopic = async (t: string, key: string) => {
+    if (!(await loadTopic(key))) await runAnalyze(t);
+  };
+
+  /** 个人报告点击「我的回答」：载入话题报告并弹出该回答的主张拆解 */
+  const openAnswer = async (t: string, key: string, aid: string) => {
+    try {
+      const r = await fetchResult(key);
+      setResult(r);
+      setFocusCluster(null);
+      setOpenMinor(null);
+      setLens("info");
+      setView("dashboard");
+      const hit = r.answers.find((a) => String(a.content_id).includes(aid) || (a.url || "").includes(`/answer/${aid}`));
+      setArchiveId(hit ? hit.content_id : null);
+    } catch {
+      await runAnalyze(t);
     }
   };
 
@@ -273,7 +298,7 @@ export default function Home() {
               </div>
               {/* 个人遗珠：仅已登录用户可见（未授权时静默隐藏，入口在页头按钮） */}
               <div className="mt-10 flex w-full flex-col items-center pb-10">
-                <PersonalBoard />
+                <PersonalBoard onOpenTopic={openTopic} onOpenAnswer={openAnswer} />
               </div>
             </section>
 

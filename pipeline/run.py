@@ -13,9 +13,12 @@
 """
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 # Windows 控制台默认 GBK，统一改为 UTF-8 输出，防止打印 Unicode 崩溃
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
@@ -46,14 +49,15 @@ from pipeline.score import score_answers, monopoly_metrics
 from pipeline.report import name_clusters, build_reason_features, write_reasons
 
 
-def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bool) -> dict:
+def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bool,
+        include_answers: list[dict] | None = None) -> dict:
     key = topic_key(title)
     cache_dir = config.CACHE_DIR / key
     cache_dir.mkdir(parents=True, exist_ok=True)
     print(f"议题：{title}（缓存 key: {key}）")
 
-    # 整报告短路：已分析过的议题直接返回缓存（force 才重跑）
-    if not force:
+    # 整报告短路：已分析过的议题直接返回缓存（force / 有注入回答 才重跑）
+    if not force and not include_answers:
         cached_report = load_cache(key, "6_report")
         if cached_report:
             print("[缓存] 该议题已分析过，直接返回缓存报告")
@@ -95,6 +99,97 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
         save_cache(key, "1_search", stage1)
 
     samples = stage1["samples"]
+
+    # 主动注入回答（个人遗珠）：用户自己的低赞回答常不进搜索样本。
+    # 三级策略：① 已在枚举样本（无赞数）→ 升级为曝光样本参与 U 判定；② 有全文 → 新样本；③ 无全文 → 枚举接口拉摘要补文本
+    if include_answers:
+        def _norm(u: str) -> str:
+            return str(u or "").split("?")[0].rstrip("/")
+
+        by_url = {_norm(s.get("url")): s for s in samples}
+        enum_cache: dict[str, str] | None = None  # url → summary（懒拉取）
+        injected = 0
+
+        def _fetch_answer_text(url: str) -> str:
+            """兜底：知乎回答页公开可访问，抓 HTML 内嵌 JSON 取全文（不耗 API 配额）。"""
+            try:
+                resp = httpx.get(str(url), headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                                 timeout=15, follow_redirects=True)
+                m = re.search(r'<script id="js-initialData" type="text/json">(.*?)</script>', resp.text, re.S)
+                if not m:
+                    return ""
+                data = json.loads(m.group(1))
+                answers = (data.get("initialState", {}).get("entities", {}).get("answers") or {})
+                for ans in answers.values():
+                    content = str(ans.get("content") or "")
+                    if len(content) > 40:
+                        return re.sub(r"<[^>]+>", "", content).strip()
+            except Exception:  # noqa: BLE001 - 兜底失败就跳过
+                pass
+            return ""
+
+        for ia in include_answers:
+            u = _norm(ia.get("url"))
+            if not u:
+                continue
+            existing = by_url.get(u)
+            if existing is not None:
+                # ① 已在样本：补赞数/发布时间，升级为「曝光通道」样本（参与 U 判定）
+                if existing.get("votes_unknown") or existing.get("votes", 0) == 0:
+                    et = int(ia.get("edit_time") or 0)
+                    if et > 10**12:
+                        et //= 1000  # 毫秒→秒
+                    existing["votes"] = int(ia.get("votes") or 0)
+                    existing["edit_time"] = et or existing.get("edit_time", 0)
+                    existing.pop("votes_unknown", None)
+                    injected += 1
+                continue
+            text = str(ia.get("text") or "").strip()
+            if not text and question_url:
+                # ③ 创作接口无全文：用问题枚举通道的摘要（~200 字）做文本兜底
+                if enum_cache is None:
+                    enum_cache = {}
+                    try:
+                        for it in (enumerate_question(client, question_url).get("items") or []):
+                            su = _norm(it.get("url"))
+                            if su and (it.get("summary") or "").strip():
+                                enum_cache[su] = it["summary"].strip()
+                    except Exception as e:  # noqa: BLE001 - 兜底失败就跳过
+                        print(f"      [提示] 枚举兜底拉取失败：{e}")
+                text = enum_cache.get(u, "")
+            if not text:
+                # ④ 最终兜底：直接抓回答公开页面取全文
+                text = _fetch_answer_text(u)
+                if text:
+                    print(f"      页面兜底取回全文 {len(text)} 字")
+            if not text:
+                print(f"      [提示] 注入跳过（无文本可拆）：{u[-40:]}")
+                continue
+            # ② 新样本：以「曝光通道」身份并入
+            et = int(ia.get("edit_time") or 0)
+            if et > 10**12:
+                et //= 1000
+            samples.append({
+                "content_id": str(ia.get("content_id") or f"injected_{injected}"),
+                "question_title": title,
+                "text": text[:6000],
+                "votes": int(ia.get("votes") or 0),
+                "comments": 0,
+                "author": str(ia.get("author") or "我"),
+                "edit_time": et,
+                "url": ia.get("url"),
+            })
+            by_url[u] = samples[-1]
+            injected += 1
+        if injected:
+            save_cache(key, "1_search", stage1)
+            # 样本构成变了：下游缓存全部作废重算（文章级缓存使重拆只花新注入篇的 LLM）
+            for st in ("2_claims", "4_cluster", "4b_freshness", "5_score", "6a_names", "6_report"):
+                (cache_dir / f"{st}.json").unlink(missing_ok=True)
+            print(f"      主动注入 {injected} 篇本人回答，下游重跑")
+        else:
+            print("      [提示] 无有效注入（样本已覆盖或均无文本）")
+
     if len(samples) < 5:
         print(f"[错误] 样本过少（{len(samples)} 篇），无法分析。换个更热门的议题或提供 --question-url。")
         sys.exit(1)

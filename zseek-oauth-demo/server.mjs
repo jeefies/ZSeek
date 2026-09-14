@@ -45,7 +45,8 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/oauth/personal-u') {
       const body = await readBody();
       const analyze = Array.isArray(body.analyze) ? body.analyze.map(String) : [];
-      return json(response, 200, { ok: true, report: await oauth.personal(request, response, analyze) });
+      const force = body.force === true;  // 注入重测：已 done 的问题也强制重新分析
+      return json(response, 200, { ok: true, report: await oauth.personal(request, response, analyze, force) });
     }
     if (request.method === 'POST' && url.pathname === '/api/oauth/logout') { oauth.logout(request, response); return json(response, 200, { ok: true }); }
     if (request.method !== 'GET') return json(response, 405, { ok: false, error: { message: '不支持的请求方法' } });

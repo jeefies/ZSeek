@@ -363,6 +363,8 @@ def split_claims(
             except (json.JSONDecodeError, OSError):
                 pass  # 损坏则重拆
         misses.append(a)
+    # 注入的本人回答（mine_ 前缀）排最前：LLM 调用预算耗尽也不能把「我的回答」挤出拆主张队列
+    misses.sort(key=lambda a: 0 if str(a["content_id"]).startswith("mine_") else 1)
     if misses and len(misses) < len(answers):
         print(f"      文章级缓存命中 {len(answers) - len(misses)}/{len(answers)} 篇，仅重拆 {len(misses)} 篇")
     # 一篇一次调用：不复用、不打包——单篇输出短不易截断，主张归属零歧义
@@ -421,6 +423,20 @@ def split_claims(
             results[cid] = claims
             # 文章级落盘：跨话题/中断重跑零消耗复用
             _acache_path(cid).write_text(json.dumps(claims, ensure_ascii=False), encoding="utf-8")
+
+    def _fallback_injected() -> None:
+        """本人回答兜底：LLM 0 主张（预算截断/短文本漏提）时整段作一条 personal 主张，绝不让它静默消失。"""
+        for a in answers:
+            cid = str(a["content_id"])
+            if not cid.startswith("mine_"):
+                continue
+            text = str(a.get("text") or "").strip()
+            if not text or results.get(cid):
+                continue
+            claims = [{"claim": text, "type": "personal", "detail": False, "verifiable": False}]
+            results[cid] = claims
+            _acache_path(cid).write_text(json.dumps(claims, ensure_ascii=False), encoding="utf-8")
+            print(f"  [提示] 本人回答 LLM 未出主张，整段兜底为 1 条 personal：{text[:24]}")
 
     def _process(batch: list[dict[str, Any]], tag: str) -> None:
         nonlocal calls
@@ -482,6 +498,7 @@ def split_claims(
                     _process(batch[:mid], f"批次 {bi + 1}.1")
                     _process(batch[mid:], f"批次 {bi + 1}.2")
             zhida.close()
+            _fallback_injected()
             return results
         except Exception as e:  # noqa: BLE001 - 提交/轮询失败回退实时链
             print(f"[提示] Batch 拆主张不可用（{e}），回退实时调用")
@@ -496,6 +513,7 @@ def split_claims(
         for leftover in progress_path.parent.glob("2_progress.*.tmp"):
             leftover.unlink(missing_ok=True)  # 清理并发残留的临时文件
     zhida.close()
+    _fallback_injected()
     return results
 
 
