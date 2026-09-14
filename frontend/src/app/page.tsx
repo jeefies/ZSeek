@@ -4,8 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ScatterMap, { type SortLens } from "@/components/ScatterMap";
 import AnalyzingView from "@/components/AnalyzingView";
 import AnswerArchive, { Badge } from "@/components/AnswerArchive";
+import PersonalBoard from "@/components/PersonalBoard";
 import { CLUSTER_COLORS } from "@/lib/theme";
-import { fetchResult, fetchTopics, jobEventsUrl, startAnalyze } from "@/lib/api";
+import { fetchHotBoard, fetchPearls, fetchResult, fetchTopics, jobEventsUrl, startAnalyze } from "@/lib/api";
+import type { HotBoardItem, PearlItem } from "@/lib/api";
 import type { Answer, Result, StageEvent, TopicInfo } from "@/lib/types";
 
 type View = "home" | "analyzing" | "dashboard";
@@ -17,8 +19,16 @@ export default function Home() {
   const [stages, setStages] = useState<StageEvent[]>([]);
   const [goldLine, setGoldLine] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [claimProgress, setClaimProgress] = useState<{ article: string; done: number; total: number } | null>(null);
+  const [claimEta, setClaimEta] = useState<{ t0: number; d0: number } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [topics, setTopics] = useState<TopicInfo[]>([]);
+  const [hotBoard, setHotBoard] = useState<HotBoardItem[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const [pearls, setPearls] = useState<PearlItem[]>([]);
+  const [pageIdx, setPageIdx] = useState(0);
+  const homeRef = useRef<HTMLElement | null>(null);
+  const [oauth, setOauth] = useState<{ authorized: boolean; profile?: { name?: string | null } | null } | null>(null);
   const [lens, setLens] = useState<SortLens>("info");
   const [focusCluster, setFocusCluster] = useState<number | null>(null);
   const [openMinor, setOpenMinor] = useState<number | "noise" | null>(null);
@@ -38,6 +48,12 @@ export default function Home() {
 
   useEffect(() => {
     fetchTopics().then(setTopics).catch(() => {});
+    fetchHotBoard().then(setHotBoard).catch(() => {});
+    fetchPearls().then(setPearls).catch(() => {});
+    fetch("/api/oauth/status")
+      .then((r) => r.json())
+      .then((s) => setOauth(s))
+      .catch(() => {}); // demo 服务不可用时保持「测测我的遗珠」
   }, [view]);
 
   const analyze = async () => {
@@ -48,6 +64,8 @@ export default function Home() {
     setRunning(true);
     setStages([]);
     setGoldLine(null);
+    setClaimProgress(null);
+    setClaimEta(null);
     setError(null);
     setResult(null);
     setFocusCluster(null);
@@ -62,6 +80,11 @@ export default function Home() {
       es.addEventListener("stage", (e) => {
         const evt = JSON.parse((e as MessageEvent).data) as StageEvent;
         setStages((prev) => [...prev.filter((s) => s.stage !== evt.stage), evt]);
+      });
+      es.addEventListener("progress", (e) => {
+        const p = JSON.parse((e as MessageEvent).data) as { article: string; done: number; total: number };
+        setClaimProgress(p);
+        setClaimEta((prev) => prev ?? { t0: Date.now(), d0: p.done ?? 0 });
       });
       es.addEventListener("done", async () => {
         stopEvents();
@@ -111,6 +134,17 @@ export default function Home() {
     }
   };
 
+  const scrollToPage = (i: number) => {
+    const el = homeRef.current;
+    if (!el) return;
+    el.scrollTo({ top: i * el.clientHeight, behavior: "smooth" });
+  };
+  const onHomeScroll = () => {
+    const el = homeRef.current;
+    if (!el) return;
+    setPageIdx(Math.min(2, Math.max(0, Math.round(el.scrollTop / el.clientHeight))));
+  };
+
   const byId = new Map(result?.answers.map((a) => [a.content_id, a]) ?? []);
   const maxV = Math.max(...(result?.answers.map((a) => a.info_score) ?? [1]), 0.0001);
   // 价值百分位
@@ -119,6 +153,11 @@ export default function Home() {
     vSorted.length ? Math.round((vSorted.filter((v) => v <= a.info_score).length / vSorted.length) * 100) : 0;
 
   const archive = archiveId ? byId.get(archiveId) ?? null : null;
+  // 拆主张实测速率 → 预计剩余（claims 阶段才有数据）
+  const claimEtaSeconds =
+    claimEta && claimProgress && claimProgress.done > claimEta.d0
+      ? Math.round(((claimProgress.total - claimProgress.done) * (Date.now() - claimEta.t0)) / (claimProgress.done - claimEta.d0))
+      : null;
   const m = result?.monopoly;
   const pearlTotal = topics.reduce((s, t) => s + (t.pearl_count ?? 0), 0);
   // 观点簇：降序排列；≤2 条的微阵营归入少数派报告
@@ -135,7 +174,13 @@ export default function Home() {
     <div className="flex h-screen flex-col overflow-hidden bg-base text-ink">
       {/* 页头：固定 Slogan */}
       <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-panel px-4">
-        <span className="text-sm font-semibold tracking-wide">知寻 ZhiSeek</span>
+        <button
+          onClick={() => setView("home")}
+          className="text-sm font-semibold tracking-wide hover:text-gold"
+          title="回到主页"
+        >
+          知寻 ZhiSeek
+        </button>
         <span className="text-xs text-dim">知寻 —— 寻找被低估的声音</span>
         {view === "dashboard" && (
           <div className="ml-auto flex items-center gap-2">
@@ -155,55 +200,181 @@ export default function Home() {
             </button>
           </div>
         )}
+        <a
+          href="/login/"
+          title={oauth?.authorized ? "知乎账号已授权" : "知乎登录，测量你的回答被埋没了多少"}
+          className={`max-w-44 shrink-0 truncate rounded-lg border border-gold/60 px-3 py-1 text-xs text-gold hover:bg-gold/10 ${
+            view === "dashboard" ? "" : "ml-auto"
+          }`}
+        >
+          {oauth?.authorized ? `✓ 已登录${oauth.profile?.name ? ` · ${oauth.profile.name}` : ""}` : "测测我的遗珠"}
+        </a>
       </header>
 
-      {/* ============ 页面 1：首页 ============ */}
+      {/* ============ 页面 1：首页（scroll-snap 翻页：寻找 → 遗珠 → 垄断榜） ============ */}
       {view === "home" && (
-        <main className="flex flex-1 flex-col items-center justify-center gap-8 overflow-y-auto px-6 py-8">
-          <div className="text-center">
-            <h1 className="text-xl font-semibold">每个问题里，都有没被看见的好回答</h1>
-            <p className="mt-2 text-sm text-dim">
-              一片深色的知识海洋里，大多数星挤在银河中——知寻帮你找到那些独自发光的星
-            </p>
-          </div>
-          <div className="flex w-[min(560px,92%)] gap-2">
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && analyze()}
-              placeholder="输入一个知乎问题，如：近视手术安全吗"
-              autoFocus
-              className="flex-1 rounded-xl border border-line bg-panel px-4 py-3 text-base text-ink outline-none placeholder:text-dim focus:border-gold"
-            />
-            <button
-              onClick={analyze}
-              disabled={running}
-              className="rounded-xl bg-gold px-8 text-base font-semibold text-[#1F2328] disabled:opacity-40"
-            >
-              寻
-            </button>
-          </div>
-          <div className="font-mono text-xs text-dim">
-            已分析 {topics.length} 个问题 · 挖出 {pearlTotal} 篇遗珠
-          </div>
-          {topics.length > 0 && (
-            <div className="flex max-w-[80%] flex-wrap justify-center gap-2">
-              {topics.map((t) => (
+        <>
+          {/* 右侧圆点导航：悬停出名称，点击平滑锁定到对应页 */}
+          <nav className="fixed right-4 top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-3">
+            {["寻找", "遗珠", "垄断榜"].map((name, i) => (
+              <button
+                key={name}
+                title={name}
+                onClick={() => scrollToPage(i)}
+                className={`h-2.5 w-2.5 rounded-full border border-gold/60 transition-all hover:scale-125 ${
+                  pageIdx === i ? "bg-gold" : "bg-transparent"
+                }`}
+              />
+            ))}
+          </nav>
+          <main
+            ref={homeRef}
+            onScroll={onHomeScroll}
+            className="flex-1 snap-y snap-mandatory overflow-y-auto scroll-smooth"
+          >
+            {/* ── 第 1 页：询问 + 我的报告 ── */}
+            <section className="flex min-h-full snap-start flex-col items-center px-6 pt-[13vh]">
+              <div className="text-center">
+                <h1 className="text-[28px] font-semibold leading-9 text-[#E6E9EF]">
+                  每个问题里，都有没被看见的好回答
+                </h1>
+              </div>
+              <div className="mt-6 flex w-[min(560px,92%)] gap-2">
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && analyze()}
+                  placeholder="输入一个知乎问题…"
+                  autoFocus
+                  className="flex-1 rounded-xl border border-line bg-panel px-4 py-3 text-base text-ink outline-none placeholder:text-dim focus:border-gold"
+                />
                 <button
-                  key={t.key}
-                  onClick={() => loadTopic(t.key)}
-                  className="rounded-full border border-line bg-panel px-3 py-1 text-xs text-dim hover:border-gold hover:text-ink"
+                  onClick={analyze}
+                  disabled={running}
+                  className="rounded-xl bg-gold px-8 text-base font-semibold text-[#1F2328] disabled:opacity-40"
                 >
-                  {t.title}
+                  寻
                 </button>
-              ))}
-            </div>
-          )}
-        </main>
+              </div>
+              {topics.length >= 2 && (
+                <div className="mt-4 text-xs text-dim">
+                  试试：
+                  <button onClick={() => setTitle(topics[0].title)} className="hover:text-gold hover:underline underline-offset-2">
+                    {topics[0].title}
+                  </button>
+                  <span className="mx-1.5 text-line">·</span>
+                  <button onClick={() => setTitle(topics[1].title)} className="hover:text-gold hover:underline underline-offset-2">
+                    {topics[1].title}
+                  </button>
+                </div>
+              )}
+              <div className="mt-4 font-mono text-xs text-dim">
+                已分析 {topics.length} 个问题 · 挖出 {pearlTotal} 篇遗珠
+              </div>
+              {/* 个人遗珠：仅已登录用户可见（未授权时静默隐藏，入口在页头按钮） */}
+              <div className="mt-10 flex w-full flex-col items-center pb-10">
+                <PersonalBoard />
+              </div>
+            </section>
+
+            {/* ── 第 2 页：最被低估的回答（跨议题 U 值榜） ── */}
+            <section className="flex min-h-full snap-start flex-col items-center px-6 py-10">
+              <div className="w-[min(720px,94%)]">
+                <h2 className="text-xl font-medium text-[#E6E9EF]">💎 最被低估的回答</h2>
+                <p className="mt-1 text-xs text-dim">
+                  整个知识库里，价值与曝光落差最大的回答——点卡片直达该问题的观点星图
+                </p>
+                {pearls.length > 0 ? (
+                  <div className="mt-4 space-y-2">
+                    {pearls.map((p) => (
+                      <button
+                        key={`${p.key}-${p.author}`}
+                        onClick={() => loadTopic(p.key)}
+                        className="block w-full rounded-lg border border-gold/30 bg-panel px-3 py-2 text-left transition-colors hover:border-gold"
+                      >
+                        <div className="truncate text-[10px] text-dim">📍 {p.q_title}</div>
+                        <div className="mt-1 flex items-center gap-2 text-sm">
+                          <b className="min-w-0 truncate text-[#E6E9EF]">{p.author}</b>
+                          {p.badges.map((b) => <Badge key={b} name={b} />)}
+                          <span className="ml-auto shrink-0 font-mono text-xs text-gold">
+                            U{p.u != null && p.u >= 0 ? "+" : ""}{p.u?.toFixed(2) ?? "—"}
+                          </span>
+                        </div>
+                        {p.reason && <p className="mt-1 text-xs leading-5 text-dim">💡 {p.reason}</p>}
+                        <div className="mt-1 font-mono text-[10px] text-dim">
+                          {p.votes == null ? "赞同数未知" : `${p.votes} 赞`}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-6 text-center text-xs text-dim">分析完成的问题会在这里出现被埋没的好回答</p>
+                )}
+              </div>
+            </section>
+
+            {/* ── 第 3 页：今日最被垄断的问题 ── */}
+            <section className="flex min-h-full snap-start flex-col items-center px-6 py-10">
+              <div className="w-[min(720px,94%)]">
+                <h2 className="text-xl font-medium text-[#E6E9EF]">🔥 今日最被垄断的问题</h2>
+                <p className="mt-1 text-xs text-dim">热度 Top3 拿走了多少曝光，又贡献了多少信息增量？</p>
+                {hotBoard.length > 0 ? (
+                  <>
+                    <div className="mt-4 space-y-2">
+                      {(showAll ? hotBoard : hotBoard.slice(0, 3)).map((h, i) => {
+                        const expo = (h.exposure_share_top_k ?? 0) * 100;
+                        const incr = (h.info_increment_share_top_k ?? 0) * 100;
+                        return (
+                          <button
+                            key={h.key}
+                            onClick={() => h.ready && loadTopic(h.key)}
+                            disabled={!h.ready}
+                            className={`block w-full rounded-lg border border-line bg-panel px-3 py-2 text-left transition-colors ${
+                              h.ready ? "hover:border-gold" : "opacity-50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 text-sm">
+                              <span className="shrink-0 font-mono text-xs text-dim">{i + 1}.</span>
+                              <span className="min-w-0 flex-1 truncate text-[#E6E9EF]">{h.title}</span>
+                              {!h.ready && <span className="shrink-0 font-mono text-[10px] text-dim">分析中…</span>}
+                            </div>
+                            <div className="mt-1.5 flex items-center gap-2">
+                              <span className="w-8 shrink-0 text-[9px] text-dim">曝光</span>
+                              <div className="h-1 flex-1 bg-line">
+                                <div className="h-full bg-[#5B7FA6]" style={{ width: `${expo}%` }} />
+                              </div>
+                              <span className="w-8 shrink-0 text-right font-mono text-[9px] text-dim">{expo.toFixed(0)}%</span>
+                            </div>
+                            <div className="mt-1 flex items-center gap-2">
+                              <span className="w-8 shrink-0 text-[9px] text-dim">增量</span>
+                              <div className="h-1 flex-1 bg-line">
+                                <div className="h-full bg-[#5BA694]" style={{ width: `${incr}%` }} />
+                              </div>
+                              <span className="w-8 shrink-0 text-right font-mono text-[9px] text-dim">{incr.toFixed(0)}%</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {!showAll && hotBoard.length > 3 && (
+                      <button onClick={() => setShowAll(true)} className="mt-3 text-xs text-dim hover:text-gold">
+                        查看全部 {hotBoard.length} 个问题 →
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <p className="mt-6 text-center text-xs text-dim">榜单生成中…</p>
+                )}
+              </div>
+            </section>
+          </main>
+        </>
       )}
 
       {/* ============ 页面 2：分析中 ============ */}
-      {view === "analyzing" && <AnalyzingView stages={stages} goldLine={goldLine} error={error} />}
+      {view === "analyzing" && (
+        <AnalyzingView stages={stages} goldLine={goldLine} error={error} claimProgress={claimProgress} claimEtaSeconds={claimEtaSeconds} />
+      )}
 
       {/* ============ 页面 3：结果仪表盘（三栏） ============ */}
       {view === "dashboard" && result && m && (

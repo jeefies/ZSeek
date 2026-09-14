@@ -52,6 +52,13 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
     cache_dir.mkdir(parents=True, exist_ok=True)
     print(f"议题：{title}（缓存 key: {key}）")
 
+    # 整报告短路：已分析过的议题直接返回缓存（force 才重跑）
+    if not force:
+        cached_report = load_cache(key, "6_report")
+        if cached_report:
+            print("[缓存] 该议题已分析过，直接返回缓存报告")
+            return cached_report
+
     client = ZhihuClient()
 
     # ---- 阶段 1：抓取 ----
@@ -75,11 +82,15 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
         enumeration = None
         if question_url:
             print(f"      枚举通道：{question_url}")
-            enumeration = enumerate_question(client, question_url)
-            before = len(samples)
-            samples = merge_enumeration_samples(samples, enumeration)
-            print(f"      枚举并入 {len(samples) - before} 篇（问题共取 {enumeration['fetched']} 条，"
-                  f"{'已取完' if enumeration['is_end'] else '截断'}）")
+            try:
+                enumeration = enumerate_question(client, question_url)
+            except Exception as e:  # noqa: BLE001 - 枚举是增强通道，失败仅用搜索样本继续
+                print(f"      枚举通道不可用（{e}），跳过")
+            if enumeration:
+                before = len(samples)
+                samples = merge_enumeration_samples(samples, enumeration)
+                print(f"      枚举并入 {len(samples) - before} 篇（问题共取 {enumeration['fetched']} 条，"
+                      f"{'已取完' if enumeration['is_end'] else '截断'}）")
         stage1 = {"title": title, "question_url": question_url, "samples": samples, "enumeration": enumeration, "variants": variants}
         save_cache(key, "1_search", stage1)
 
@@ -99,8 +110,8 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
         stage2 = {"claims_map": claims_map}
         save_cache(key, "2_claims", stage2)
     else:
-        print(f"[2/6] 拆主张：{len(samples)} 篇回答（glm-4-air 批量处理）…")
-        claims_map = split_claims(samples)
+        print(f"[2/6] 拆主张：{len(samples)} 篇回答（GLM-4.7-Flash / 百炼 Batch）…")
+        claims_map = split_claims(samples, cache_dir=config.CACHE_DIR / key)
         total = sum(len(v) for v in claims_map.values())
         print(f"      共 {total} 条主张")
         stage2 = {"claims_map": claims_map}

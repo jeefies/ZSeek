@@ -1,18 +1,23 @@
 """LLM 客户端：分层路由。
 
-- 结构化抽取（拆主张/时效/锚点/冲突判定）：openai-next 的 glm-4-air（便宜，
-  调用结构成本大头在这层）；环境变量缺失时回退知乎直答 zhida-fast-1p5
-- 生成质量任务（簇命名/挖掘理由）：知乎直答 zhida-thinking-1p5（少量调用）
+- 结构化抽取（拆主张/时效/锚点/冲突判定）：**优先智谱 GLM-4.7-Flash**，出错回退
+  阿里云百炼 qwen3.7-flash（实时），最后回退知乎直答 zhida-fast-1p5
+- 拆主张大流量：走百炼 Batch File（JSONL 上传 → 轮询 → 下载，半价不占实时并发），
+  批任务失败自动回退实时链
+- 生成质量任务（簇命名/挖掘理由）：GLM-4.7-Flash → qwen3.7-flash → zhida-thinking-1p5
 
 实测注意：
 - zhida 输出包 ```json 代码块，需剥离后解析
 - 模型会脑补原文没有的信息，prompt 必须强约束 + 输出校验
-- 直答额度 100/日，openai-next 按量计费（拆主张约个位数人民币/千回答问题）
 """
+import hashlib
 import json
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -118,12 +123,20 @@ def _extract_json(text: str) -> Any:
 
 
 class ZhidaClient:
-    """知乎直答客户端（thinking 级任务 + 回退通道）。"""
+    """知乎直答客户端。chat() 现优先走 GLM-4.7-Flash → qwen3.7-flash，均失败才回退直答。"""
 
     def __init__(self) -> None:
         self._client = httpx.Client(base_url=config.ZHIHU_BASE, timeout=120.0)
 
     def chat(self, model: str, prompt: str, retries: int = 1) -> str:
+        try:
+            return _chat_zhipu(prompt)
+        except RuntimeError:
+            pass  # 回退 qwen
+        try:
+            return _chat_dashscope(prompt)
+        except RuntimeError:
+            pass  # 回退直答
         last_err: Exception | None = None
         for attempt in range(retries + 1):
             try:
@@ -154,7 +167,7 @@ class ZhidaClient:
 
 
 def _chat_openai_next(prompt: str, retries: int = 1) -> str:
-    """openai-next（GLM-4-Air 等 OpenAI 兼容接口），用于结构化抽取。"""
+    """openai-next（历史遗留通道，额度已耗尽，保留备用）。"""
     base = os.environ.get("OPENAI_NEXT_BASE_URL", "").rstrip("/")
     key = os.environ.get("OPENAI_NEXT_API_KEY", "").strip()
     model = os.environ.get("OPENAI_NEXT_MODEL", "glm-4-air").strip()
@@ -183,39 +196,202 @@ def _chat_openai_next(prompt: str, retries: int = 1) -> str:
     raise RuntimeError(f"openai-next 调用失败: {last_err}")
 
 
+def _chat_compat(base: str, key: str, model: str, prompt: str, retries: int = 1,
+                 timeout: float = 120.0) -> str:
+    """OpenAI 兼容 chat/completions 通用调用（GLM / 百炼实时共用）。"""
+    if not base or not key:
+        raise RuntimeError("未配置 BASE_URL / API_KEY")
+    url = base if base.rstrip("/").endswith("/chat/completions") else f"{base.rstrip('/')}/chat/completions"
+    last_err: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            resp = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": model, "temperature": 0.0,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt < retries:
+                time.sleep(2)
+    raise RuntimeError(f"调用失败: {last_err}")
+
+
+def _chat_zhipu(prompt: str, retries: int = 1) -> str:
+    """智谱 bigmodel GLM-4.7-Flash（优先通道）。"""
+    return _chat_compat(
+        os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/chat/completions"),
+        os.environ.get("ZHIPU_API_KEY", os.environ.get("ZHIPU_APK_KEY", "")).strip(),  # 兼容历史拼写
+        os.environ.get("ZHIPU_MODEL", "glm-4.7-flash"), prompt, retries)
+
+
+def _chat_dashscope(prompt: str, retries: int = 1) -> str:
+    """阿里云百炼 qwen3.7-flash 实时（回退通道；批量走 _dashscope_batch_chat）。"""
+    return _chat_compat(
+        os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        os.environ.get("DASHSCOPE_API_KEY", "").strip(),
+        os.environ.get("DASHSCOPE_MODEL", "qwen3.7-flash"), prompt, retries)
+
+
 def chat_extract(prompt: str, zhida_fallback: ZhidaClient | None = None) -> str:
-    """抽取级调用：优先 glm-4-air（便宜），失败回退 zhida-fast。"""
+    """抽取级调用：GLM-4.7-Flash → qwen3.7-flash → 知乎直答。"""
     try:
-        return _chat_openai_next(prompt)
+        return _chat_zhipu(prompt)
+    except RuntimeError:
+        pass
+    try:
+        return _chat_dashscope(prompt)
     except RuntimeError as e:
-        print(f"  [提示] glm-4-air 不可用，回退直答: {e}")
+        print(f"  [提示] GLM/qwen 均不可用，回退直答: {e}")
         client = zhida_fallback or ZhidaClient()
         return client.chat(config.ZHIDA_FAST, prompt)
+
+
+def _dashscope_batch_chat(prompts: list[str], cache_dir: Path | None) -> list[str]:
+    """百炼 Batch File（OpenAI 兼容 /files + /batches，非 dashscope SDK）。
+
+    攒 JSONL → 上传（purpose=batch）→ 创建批任务 → 轮询 → 下载结果按 custom_id 对齐。
+    断点续等：cache_dir/2_batch.json 记录 batch_id，重跑/重启后续等旧任务不重复提交。
+    计费：异步后付半价，不占实时调用并发配额。
+    """
+    base = os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+    key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
+    model = os.environ.get("DASHSCOPE_MODEL", "qwen3.7-flash")
+    if not key:
+        raise RuntimeError("未配置 DASHSCOPE_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"}
+    meta_path = (cache_dir / "2_batch.json") if cache_dir else None
+
+    if meta_path and meta_path.exists():
+        batch_id = json.loads(meta_path.read_text(encoding="utf-8"))["batch_id"]
+        print(f"      Batch：续等未完成任务 {batch_id}")
+    else:
+        lines = [
+            json.dumps({
+                "custom_id": f"req-{i}", "method": "POST", "url": "/v1/chat/completions",
+                "body": {"model": model, "temperature": 0.0, "max_tokens": 8192,
+                         "messages": [{"role": "user", "content": p}]},
+            }, ensure_ascii=False)
+            for i, p in enumerate(prompts)
+        ]
+        tmp = (cache_dir or Path.cwd()) / "2_batch_input.jsonl"
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        try:
+            up = httpx.post(f"{base}/files", headers=headers,
+                            files={"file": ("batch.jsonl", tmp.read_bytes(), "application/jsonl")},
+                            data={"purpose": "batch"}, timeout=120.0)
+            up.raise_for_status()
+            file_id = up.json()["id"]
+            bt = httpx.post(f"{base}/batches", headers={**headers, "Content-Type": "application/json"},
+                            json={"input_file_id": file_id, "endpoint": "/v1/chat/completions",
+                                  "completion_window": "24h"}, timeout=60.0)
+            bt.raise_for_status()
+            batch_id = bt.json()["id"]
+        finally:
+            tmp.unlink(missing_ok=True)
+        if meta_path:
+            meta_path.write_text(json.dumps({"batch_id": batch_id, "count": len(prompts)}), encoding="utf-8")
+        print(f"      Batch：已提交 {len(prompts)} 个请求，任务 {batch_id}，等待调度…")
+
+    deadline = time.time() + config.BATCH_POLL_TIMEOUT
+    sj: dict[str, Any] = {}
+    while True:
+        st = httpx.get(f"{base}/batches/{batch_id}", headers=headers, timeout=60.0)
+        st.raise_for_status()
+        sj = st.json()
+        status = sj.get("status")
+        counts = sj.get("request_counts") or {}
+        print(f"      Batch：{status} 完成 {counts.get('completed', 0)}/{counts.get('total', '?')}")
+        if status == "completed":
+            break
+        if status in ("failed", "expired", "cancelled"):
+            if meta_path:
+                meta_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Batch 任务 {status}")
+        if time.time() > deadline:
+            raise RuntimeError("Batch 等待超时（任务仍在服务端，重跑会续等）")
+        time.sleep(config.BATCH_POLL_INTERVAL)
+
+    output_id = sj.get("output_file_id")
+    if not output_id:
+        raise RuntimeError("Batch 完成但无输出文件")
+    content = httpx.get(f"{base}/files/{output_id}/content", headers=headers, timeout=120.0).text
+    by_id: dict[str, str] = {}
+    for line in content.splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        try:
+            by_id[r["custom_id"]] = r["response"]["body"]["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            continue
+    if meta_path:
+        meta_path.unlink(missing_ok=True)  # 完成即清，下次 force 重跑开新批次
+    return [by_id.get(f"req-{i}", "") for i in range(len(prompts))]
 
 
 def split_claims(
     answers: list[dict[str, Any]],
     batch_chars: int = config.CLAIMS_BATCH_CHARS,
     max_calls: int = config.CLAIMS_MAX_CALLS,
+    cache_dir: Path | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """批量拆主张（按字符预算打包，防长输出截断）。返回 {content_id: [claim...]}。claim 含 claim/type/verifiable。"""
+    """逐篇拆主张：每篇回答一次 LLM 调用（不复用不打包）。返回 {content_id: [claim...]}。claim 含 claim/type/verifiable。
+
+    配置 DASHSCOPE_API_KEY 且 DASHSCOPE_BATCH=1 时走百炼 Batch File（每篇一个请求，半价不占实时并发），
+    批任务失败/解析失败回退实时链（GLM → qwen → 直答）。"""
     zhida = ZhidaClient()
     results: dict[str, list[dict[str, Any]]] = {}
-    # 贪心打包：每批累计文本不超过 batch_chars（枚举摘要短，单批可装更多篇）
-    batches: list[list[dict[str, Any]]] = []
-    cur: list[dict[str, Any]] = []
-    cur_chars = 0
+    # 文章级拆主张缓存：同一篇回答跨话题/重跑时零消耗复用（key=content_id）
+    article_cache = config.CACHE_DIR / "_articles"
+    article_cache.mkdir(parents=True, exist_ok=True)
+
+    def _acache_path(cid: str) -> Path:
+        return article_cache / f"{hashlib.sha1(str(cid).encode()).hexdigest()[:16]}.json"
+
+    misses: list[dict[str, Any]] = []
     for a in answers:
-        t = len(a.get("text", ""))
-        if cur and cur_chars + t > batch_chars:
-            batches.append(cur)
-            cur, cur_chars = [], 0
-        cur.append(a)
-        cur_chars += t
-    if cur:
-        batches.append(cur)
+        p = _acache_path(a["content_id"])
+        if p.exists():
+            try:
+                results[a["content_id"]] = json.loads(p.read_text(encoding="utf-8"))
+                continue
+            except (json.JSONDecodeError, OSError):
+                pass  # 损坏则重拆
+        misses.append(a)
+    if misses and len(misses) < len(answers):
+        print(f"      文章级缓存命中 {len(answers) - len(misses)}/{len(answers)} 篇，仅重拆 {len(misses)} 篇")
+    # 一篇一次调用：不复用、不打包——单篇输出短不易截断，主张归属零歧义
+    batches: list[list[dict[str, Any]]] = [[a] for a in misses]
     calls = 0
+    total = len(batches)
     question_title = answers[0].get("question_title", "") if answers else ""
+    # 逐篇进度文件：供 /api/jobs/{key}/status 展示「正在拆哪篇」（阶段结束即删）；temp+replace 防并发写撕裂
+    progress_path = (cache_dir / "2_progress.json") if cache_dir else None
+    budget_lock = threading.Lock()
+
+    def _write_progress(bi: int, batch: list[dict[str, Any]]) -> None:
+        if not progress_path or not batch:
+            return
+        a0 = batch[0]
+        label = f"{a0.get('author') or '匿名'}：{(a0.get('text') or '')[:24]}"
+        payload = json.dumps({"done": bi, "total": total, "current": label}, ensure_ascii=False)
+        # 每线程独立 tmp + os.replace 原子换名：并发下安全（最后一个完成者生效）
+        tmp = progress_path.with_name(f"2_progress.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, progress_path)
+        except OSError:
+            pass  # 进度文件 best-effort，绝不影响拆主张主流程
+
+    def _work(item: tuple[int, list[dict[str, Any]]]) -> None:
+        bi, batch = item
+        _write_progress(bi, batch)
+        _process(batch, f"第 {bi + 1}/{total} 篇")
 
     def _ingest(batch: list[dict[str, Any]], parsed: Any) -> None:
         id_map = {f"回答 {i + 1}": a["content_id"] for i, a in enumerate(batch)}
@@ -243,15 +419,18 @@ def split_claims(
                     "verifiable": bool(c.get("verifiable")),
                 })
             results[cid] = claims
+            # 文章级落盘：跨话题/中断重跑零消耗复用
+            _acache_path(cid).write_text(json.dumps(claims, ensure_ascii=False), encoding="utf-8")
 
     def _process(batch: list[dict[str, Any]], tag: str) -> None:
         nonlocal calls
         if not batch:
             return
-        if calls >= max_calls:
-            print(f"[警告] 拆主张调用达预算上限 {max_calls}，{tag} 共 {len(batch)} 篇未处理")
-            return
-        calls += 1
+        with budget_lock:
+            if calls >= max_calls:
+                print(f"[警告] 拆主张调用达预算上限 {max_calls}，{tag} 未处理")
+                return
+            calls += 1
         answers_block = "\n\n".join(
             f"[回答 {i + 1} | id={a['content_id']}]\n{a['text']}" for i, a in enumerate(batch)
         )
@@ -273,10 +452,49 @@ def split_claims(
                     print(f"[警告] {tag} 拆主张 JSON 解析失败，跳过该篇: {e}")
         if parsed:
             _ingest(batch, parsed)
-            print(f"  拆主张 {tag} 完成（{len(batch)} 篇）")
+            print(f"  拆主张 {tag} 完成（1 篇）")
 
-    for bi, batch in enumerate(batches):
-        _process(batch, f"批次 {bi + 1}/{len(batches)}")
+    # 优先百炼 Batch File：全部批次攒一个 JSONL，一次上传等调度；
+    # 等待超时/失败自动回退下面的实时链（DASHSCOPE_BATCH=0 可整体关闭批模式）
+    if config.BATCH_ENABLED and os.environ.get("DASHSCOPE_API_KEY") and batches:
+        try:
+            prompts = []
+            for batch in batches:
+                answers_block = "\n\n".join(
+                    f"[回答 {i + 1} | id={a['content_id']}]\n{a['text']}" for i, a in enumerate(batch)
+                )
+                prompts.append(CLAIM_PROMPT.format(answers_block=answers_block, question_title=question_title))
+            outs = _dashscope_batch_chat(prompts, cache_dir)
+            for bi, (batch, text) in enumerate(zip(batches, outs)):
+                parsed = None
+                for _ in range(2):
+                    try:
+                        parsed = _extract_json(text)
+                        break
+                    except (ValueError, KeyError, json.JSONDecodeError):
+                        time.sleep(1)
+                if parsed:
+                    _ingest(batch, parsed)
+                    print(f"  拆主张 第 {bi + 1}/{len(batches)} 篇完成（Batch）")
+                else:
+                    print(f"  [提示] 批次 {bi + 1} Batch 输出解析失败，回退实时拆半")
+                    mid = max(1, len(batch) // 2)
+                    _process(batch[:mid], f"批次 {bi + 1}.1")
+                    _process(batch[mid:], f"批次 {bi + 1}.2")
+            zhida.close()
+            return results
+        except Exception as e:  # noqa: BLE001 - 提交/轮询失败回退实时链
+            print(f"[提示] Batch 拆主张不可用（{e}），回退实时调用")
+
+    # 并发拆主张：workers 路线程池（GLM/百炼均按并发限速 429 处理，失败自动回退）
+    workers = max(1, min(int(os.environ.get("CLAIMS_WORKERS", "4")), max(total, 1)))
+    if batches:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(_work, enumerate(batches)))
+    if progress_path:
+        progress_path.unlink(missing_ok=True)  # 阶段完成即清，避免下一轮早期误显示
+        for leftover in progress_path.parent.glob("2_progress.*.tmp"):
+            leftover.unlink(missing_ok=True)  # 清理并发残留的临时文件
     zhida.close()
     return results
 

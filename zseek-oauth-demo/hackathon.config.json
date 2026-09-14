@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "projectName": "知寻 ZhiSeek",
+  "projectSlug": "知寻-zhiseek",
+  "oauth": {
+    "enabled": true,
+    "appId": "466",
+    "redirectUri": "https://zseek.jeefy.top/auth/callback",
+    "credentialService": "zhihu-hackathon:知寻-zhiseek:cd52e7d88c",
+    "credentialAccount": "oauth-app-key"
+  },
+  "host": "127.0.0.1",
+  "port": 4173
+}

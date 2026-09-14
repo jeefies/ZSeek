@@ -19,6 +19,10 @@ interface Props {
   /** 完成后追加的金色预告行（如 "> ✦ 发现 3 篇沧海遗珠"） */
   goldLine: string | null;
   error: string | null;
+  /** 拆主张逐篇进度（SSE progress 事件） */
+  claimProgress?: { article: string; done: number; total: number } | null;
+  /** 拆主张预计剩余秒数（按实测速率推算） */
+  claimEtaSeconds?: number | null;
 }
 
 /** 确定性伪随机（避免每次渲染星点乱跳） */
@@ -35,7 +39,7 @@ function mulberry32(seed: number) {
 const STAR_COUNT = 110;
 
 /** 分析中：仪器扫描日志 + 星点从中心逐点亮起（动效规范 #1） */
-export default function AnalyzingView({ stages, goldLine, error }: Props) {
+export default function AnalyzingView({ stages, goldLine, error, claimProgress, claimEtaSeconds }: Props) {
   const stars = useMemo(() => {
     const rand = mulberry32(20260911);
     return Array.from({ length: STAR_COUNT }, (_, i) => {
@@ -92,6 +96,26 @@ export default function AnalyzingView({ stages, goldLine, error }: Props) {
             <span className="text-dim">{STAGE_LINES[Math.min(stages.length, STAGE_LINES.length - 1)].slice(0, 2)}</span>
             {STAGE_LINES[Math.min(stages.length, STAGE_LINES.length - 1)].slice(2)}
             <span className="animate-blink">▌</span>
+          </div>
+        )}
+        {claimProgress && !goldLine && !error && (
+          <div className="truncate text-xs leading-6 text-dim">
+            <span className="text-gold">  └ 正在拆第 {Math.min(claimProgress.done + 1, claimProgress.total)}/{claimProgress.total} 篇：</span>
+            {claimProgress.article}
+          </div>
+        )}
+        {claimEtaSeconds != null && claimProgress && claimProgress.total > 3 && !goldLine && !error && (
+          <div className="text-xs leading-6 text-dim">
+            <span className="text-gold">  └ 预计还需</span>
+            {claimEtaSeconds < 90 ? ` ${Math.max(5, Math.round(claimEtaSeconds / 5) * 5)} 秒` : ` 约 ${Math.max(1, Math.round(claimEtaSeconds / 60))} 分钟`}
+            <span className="text-gold">（按实测速率）</span>
+          </div>
+        )}
+        {claimEtaSeconds == null && claimProgress && claimProgress.total > 3 && !goldLine && !error && (
+          <div className="text-xs leading-6 text-dim">
+            <span className="text-gold">  └ 预计全程</span>
+            {` 约 ${Math.max(1, Math.round((claimProgress.total * 3) / 60))}–${Math.max(2, Math.round((claimProgress.total * 8) / 60))} 分钟`}
+            <span className="text-gold">（逐篇拆 {claimProgress.total} 篇，稍候给出实测值）</span>
           </div>
         )}
         {goldLine && <div className="mt-2 leading-6 text-gold">{goldLine}</div>}

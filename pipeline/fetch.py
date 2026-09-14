@@ -55,6 +55,11 @@ class ZhihuClient:
             {"QuestionUrl": question_url, "Limit": limit, "Offset": offset},
         )
 
+    # ---- 热榜 ----
+    def hot_list(self, limit: int = 30) -> list[dict[str, Any]]:
+        data = self._get(config.API_HOT_LIST, {"Limit": limit})
+        return (data.get("Data") or {}).get("Items", [])
+
     # ---- 额度 ----
     def quota(self) -> list[dict[str, Any]]:
         data = self._get(config.API_QUOTA, {})

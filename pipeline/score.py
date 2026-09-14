@@ -64,11 +64,13 @@ def score_answers(
         rarity = math.log(total_claims / cluster_size)  # 独有=log(总数)，共识→0
         C = 1.0 - math.exp(-k / 3.0)
         # 支柱按类型切换（手册「类型—支柱对照」）：事实类靠可查证 E，经历类靠细节密度 D
+        # personal 整体降权（PERSONAL_WEIGHT）：轶事型内容信息密度溢价高，压回合理占比
         if claim.get("type") == "personal":
             pillar = config.D_DETAIL if claim.get("detail") else config.D_VAGUE
+            v = rarity * (1.0 - (1.0 - pillar) * (1.0 - C)) * config.PERSONAL_WEIGHT
         else:
             pillar = 1.0 if claim["verifiable"] else 0.0
-        v = rarity * (1.0 - (1.0 - pillar) * (1.0 - C))
+            v = rarity * (1.0 - (1.0 - pillar) * (1.0 - C))
         status = None
         if claim["type"] == "sensitive":
             # 三级过期判定结果：expired（锚点失效/内部冲突实锤）/ suspected（未核验）

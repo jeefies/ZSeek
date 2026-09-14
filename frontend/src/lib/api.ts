@@ -24,6 +24,39 @@ export async function fetchTopics(): Promise<TopicInfo[]> {
   return res.json();
 }
 
+export interface HotBoardItem {
+  key: string;
+  title: string;
+  monopoly_gap: number | null;
+  exposure_share_top_k: number | null;
+  info_increment_share_top_k: number | null;
+  sample_size: number;
+  pearl_count: number;
+  ready: boolean;
+}
+
+export async function fetchHotBoard(): Promise<HotBoardItem[]> {
+  const res = await fetch(`${API_BASE}/api/hot-board`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export interface PearlItem {
+  key: string;
+  q_title: string;
+  author: string;
+  reason: string;
+  u: number | null;
+  votes: number | null;
+  badges: string[];
+}
+
+export async function fetchPearls(): Promise<PearlItem[]> {
+  const res = await fetch(`${API_BASE}/api/pearls`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
 export function jobEventsUrl(key: string): string {
   return `${API_BASE}/api/jobs/${key}/events`;
 }
