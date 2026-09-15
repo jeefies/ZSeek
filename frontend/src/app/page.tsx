@@ -10,7 +10,7 @@ import { fetchHotBoard, fetchPearls, fetchResult, fetchTopics, jobEventsUrl, sta
 import type { HotBoardItem, PearlItem } from "@/lib/api";
 import type { Answer, Result, StageEvent, TopicInfo } from "@/lib/types";
 
-type View = "home" | "analyzing" | "dashboard";
+type View = "home" | "analyzing" | "dashboard" | "topics";
 
 export default function Home() {
   const [title, setTitle] = useState("");
@@ -271,12 +271,12 @@ export default function Home() {
                   onKeyDown={(e) => e.key === "Enter" && analyze()}
                   placeholder="输入一个知乎问题…"
                   autoFocus
-                  className="flex-1 rounded-xl border border-line bg-panel px-4 py-3 text-base text-ink outline-none placeholder:text-dim focus:border-gold"
+                  className="flex-1 rounded-xl border border-line bg-panel px-4 py-3 text-[16px] text-ink outline-none placeholder:text-dim focus:border-gold"
                 />
                 <button
                   onClick={analyze}
                   disabled={running}
-                  className="rounded-xl bg-gold px-8 text-base font-semibold text-[#1F2328] disabled:opacity-40"
+                  className="rounded-xl bg-gold px-8 text-[16px] font-semibold text-[#1F2328] disabled:opacity-40"
                 >
                   寻
                 </button>
@@ -293,9 +293,13 @@ export default function Home() {
                   </button>
                 </div>
               )}
-              <div className="mt-4 font-mono text-xs text-dim">
-                已分析 {topics.length} 个问题 · 挖出 {pearlTotal} 篇遗珠
-              </div>
+              <button
+                onClick={() => setView("topics")}
+                title="浏览全部已分析问题"
+                className="mt-4 font-mono text-xs text-dim underline-offset-4 hover:text-gold hover:underline"
+              >
+                已分析 {topics.length} 个问题 · 挖出 {pearlTotal} 篇遗珠 →
+              </button>
               {/* 个人遗珠：仅已登录用户可见（未授权时静默隐藏，入口在页头按钮） */}
               <div className="mt-10 flex w-full flex-col items-center pb-10">
                 <PersonalBoard onOpenTopic={openTopic} onOpenAnswer={openAnswer} />
@@ -396,6 +400,45 @@ export default function Home() {
         </>
       )}
 
+      {/* ============ 问题库：全部已分析议题（点统计行进入） ============ */}
+      {view === "topics" && (
+        <main className="flex-1 overflow-y-auto p-6">
+          <div className="mx-auto w-[min(720px,94%)]">
+            <div className="flex items-baseline gap-3">
+              <h2 className="text-xl font-medium text-[#E6E9EF]">📚 问题库</h2>
+              <span className="font-mono text-xs text-dim">
+                {topics.length} 个问题 · {pearlTotal} 篇遗珠
+              </span>
+              <button onClick={() => setView("home")} className="ml-auto shrink-0 text-xs text-dim hover:text-gold">
+                ← 返回首页
+              </button>
+            </div>
+            <p className="mt-1 text-xs text-dim">点击任意问题，直达它的观点星图与遗珠清单</p>
+            <div className="mt-4 space-y-2">
+              {[...topics]
+                .sort((a, b) => (b.pearl_count ?? 0) - (a.pearl_count ?? 0))
+                .map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => loadTopic(t.key)}
+                    className="block w-full rounded-lg border border-line bg-panel px-3 py-2 text-left transition-colors hover:border-gold"
+                  >
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate text-[#E6E9EF]">{t.title}</span>
+                      {(t.pearl_count ?? 0) > 0 && (
+                        <span className="shrink-0 rounded-full border border-gold/60 bg-gold/10 px-2 py-0.5 text-[10px] text-gold">
+                          🔦 {t.pearl_count} 遗珠
+                        </span>
+                      )}
+                      <span className="shrink-0 font-mono text-[10px] text-dim">{t.sample_size} 篇样本</span>
+                    </div>
+                  </button>
+                ))}
+            </div>
+          </div>
+        </main>
+      )}
+
       {/* ============ 页面 2：分析中 ============ */}
       {view === "analyzing" && (
         <AnalyzingView stages={stages} goldLine={goldLine} error={error} claimProgress={claimProgress} claimEtaSeconds={claimEtaSeconds} />
@@ -407,7 +450,7 @@ export default function Home() {
           {/* 左栏 20%：问题档案 */}
           <aside className="flex w-[20%] min-w-[210px] shrink-0 flex-col gap-4 overflow-y-auto rounded-xl border border-line bg-panel p-4">
             <div>
-              <h2 className="text-base font-semibold leading-6">{result.title}</h2>
+              <h2 className="font-semibold leading-6 text-[#E6E9EF]">{result.title}</h2>
               <div className="mt-2 font-mono text-xs text-dim">
                 <div>样本 {result.sample_size} 篇回答</div>
                 <div>{result.claim_total} 条主张 · {result.cluster_count} 个阵营</div>

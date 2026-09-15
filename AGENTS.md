@@ -62,6 +62,7 @@ M(问题) = Top3 曝光占比 − Top3 稀有度加权主张占比   # 垄断度
 - `backend/app.py`（FastAPI）：`POST /api/analyze`（后台任务，返回缓存 key 作 job_id；可带 `include_answers` 注入本人回答）、`GET /api/jobs/{key}/events`（SSE 阶段进度）、`GET /api/jobs/{key}/status`（轻量轮询，个人遗珠用）、`GET /api/result/{key}`、`GET /api/topics`、`GET /api/pearls`（跨议题低估榜 Top12）、`GET /api/hot-board`（读 `data/campaign/monopoly_rank.json`）。CORS 只放行 localhost:3000。
 - `frontend/`：Next.js **16.3.4** + React 19 + Tailwind v4 + ECharts。**Next 16 与训练数据中的 Next.js 有破坏性差异——动手前先读 `frontend/AGENTS.md`（next dev 自动生成，勿手改）并查 `node_modules/next/dist/docs/`**。
 - 前端 API 基址 `NEXT_PUBLIC_API_BASE`，默认 `http://localhost:8000`；**生产构建必须 `NEXT_PUBLIC_API_BASE=""`**（同源走 nginx 反代，否则打到访问者本机）。
+- **Tailwind v4 命名冲突陷阱**：`@theme` 里 `--color-base` 与字号 token `--text-base` 同名，`text-base` 类会生成「color: 底色黑」而不是 16px 字号（颜色命名空间优先）。要字号写 `text-[16px]`，文字颜色永远显式写 `text-ink`/`text-[#E6E9EF]`——漏写的标题会黑底黑字。
 - UI 唯一权威 `知寻ZhiSeek-UI设计规范.md`（深色星图+遗珠金 #E8B84B 唯一高饱和色；全站仅 3 个动效；明确不做 3D/力导向图）。页面前端细节不抄进本文件。
 
 ## 生产部署（git 同步，2026-09-15 起）
