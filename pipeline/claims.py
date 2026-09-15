@@ -361,6 +361,14 @@ def split_claims(
     def _acache_path(cid: str) -> Path:
         return article_cache / f"{hashlib.sha1(str(cid).encode()).hexdigest()[:16]}.json"
 
+    def _write_acache(cid: str, claims: list[dict[str, Any]]) -> None:
+        """原子写：tmp 文件 + os.replace，并发拆同一篇不致撕裂（读端本就有 JSON 损坏自愈，这里从根上防）。"""
+        payload = json.dumps(claims, ensure_ascii=False)
+        path = _acache_path(cid)
+        tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, path)
+
     misses: list[dict[str, Any]] = []
     for a in answers:
         p = _acache_path(a["content_id"])
@@ -429,8 +437,8 @@ def split_claims(
                     "verifiable": bool(c.get("verifiable")),
                 })
             results[cid] = claims
-            # 文章级落盘：跨话题/中断重跑零消耗复用
-            _acache_path(cid).write_text(json.dumps(claims, ensure_ascii=False), encoding="utf-8")
+            # 文章级落盘：跨话题/中断重跑零消耗复用；tmp+原子换名防并发写撕裂（跨议题并行拆到同一篇时）
+            _write_acache(cid, claims)
 
     def _fallback_injected() -> None:
         """本人回答兜底：LLM 0 主张（预算截断/短文本漏提）时整段作一条 personal 主张，绝不让它静默消失。"""
@@ -443,7 +451,7 @@ def split_claims(
                 continue
             claims = [{"claim": text, "type": "personal", "detail": False, "verifiable": False}]
             results[cid] = claims
-            _acache_path(cid).write_text(json.dumps(claims, ensure_ascii=False), encoding="utf-8")
+            _write_acache(cid, claims)
             print(f"  [提示] 本人回答 LLM 未出主张，整段兜底为 1 条 personal：{text[:24]}")
 
     def _process(batch: list[dict[str, Any]], tag: str) -> None:

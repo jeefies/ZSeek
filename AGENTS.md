@@ -66,7 +66,8 @@ M(问题) = Top3 曝光占比 − Top3 稀有度加权主张占比   # 垄断度
 
 ## 生产部署（git 同步，2026-09-15 起）
 
-- **约定：每次代码修改后立即同步部署**：本地 `git push origin main` → 服务器 `cd /srv/zseek && git fetch origin && git reset --hard origin/main` → 按需重启（见下）。
+- **约定：每次代码修改后立即同步部署，一键命令**：`python scripts/deploy.py -m "提交信息"`（commit+push+服务器 fetch/reset+按改动范围重启+健康检查；`-n` 只演习）。手动流程作为兜底：
+  本地 `git push origin main` → 服务器 `cd /srv/zseek && git fetch origin && git reset --hard origin/main` → 按改动重启。
 - 线上 https://zseek.jeefy.top/（36.151.145.113，Ubuntu，root SSH）；仓库 git@github.com:jeefies/ZSeek.git（main 分支），服务器 `/srv/zseek/` 即该仓库的 checkout。
 - **`.env` 永不进 git**（.gitignore 已排除）：服务器 `/srv/zseek/.env` 为服务器本地维护的凭证文件，改凭证直接上服务器改；`oauth-demo.env`（OAuth demo 密钥）同理。服务器独有文件靠 `.git/info/exclude` 排除（venv/、oauth-demo.env、*.log）。
 - `data/` 不进 git：缓存与战役产物以服务器本地为准（`monopoly_rank.json` 等已在服务器）。
