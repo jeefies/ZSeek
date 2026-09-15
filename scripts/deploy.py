@@ -53,7 +53,8 @@ def query(cmd: list[str]) -> str:
 
 def _exec(cmd: list[str], *, timeout: int | None = None, tail: int | None = None) -> str:
     try:
-        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         sys.exit(f"[失败] 命令超时（{timeout}s）：{cmd[0]}")
     out = (p.stdout or "") + (p.stderr or "")
