@@ -1,17 +1,17 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { StageEvent } from "@/lib/types";
 
 const STAGE_LINES = [
-  "> 连接知乎知识接口…",
-  "> 拆分主张中…（只提取原文明确表达的观点）",
-  "> 计算语义坐标…（本地 embedding，不出域）",
-  "> 构建观点星图…（UMAP + HDBSCAN）",
-  "> 交叉印证 & 时效核验…",
-  "> 计算低估指数 U = 价值百分位 − 曝光百分位…",
-  "> 为观点阵营命名…",
-  "> 整理遗珠清单…",
+  "> 连接知乎知识接口",
+  "> 拆分主张中",
+  "> 计算语义坐标",
+  "> 构建观点星图",
+  "> 交叉印证 & 时效核验",
+  "> 计算低估指数 U = 价值百分位 − 曝光百分位",
+  "> 为观点阵营命名",
+  "> 整理遗珠清单",
 ];
 
 interface Props {
@@ -19,8 +19,8 @@ interface Props {
   /** 完成后追加的金色预告行（如 "> ✦ 发现 3 篇沧海遗珠"） */
   goldLine: string | null;
   error: string | null;
-  /** 拆主张逐篇进度（SSE progress 事件） */
-  claimProgress?: { article: string; done: number; total: number } | null;
+  /** 拆主张逐篇进度（SSE progress 事件）；phase=fetch 时是知识接口抓取进度 */
+  claimProgress?: { phase?: string; article: string; done: number; total: number } | null;
   /** 拆主张预计剩余秒数（按实测速率推算） */
   claimEtaSeconds?: number | null;
 }
@@ -40,6 +40,14 @@ const STAR_COUNT = 110;
 
 /** 分析中：仪器扫描日志 + 星点从中心逐点亮起（动效规范 #1） */
 export default function AnalyzingView({ stages, goldLine, error, claimProgress, claimEtaSeconds }: Props) {
+  // 当前阶段行尾省略号动效：. → .. → ... 循环
+  const [dotCount, setDotCount] = useState(1);
+  useEffect(() => {
+    if (goldLine || error) return;
+    const timer = setInterval(() => setDotCount((n) => (n % 3) + 1), 400);
+    return () => clearInterval(timer);
+  }, [goldLine, error]);
+
   const stars = useMemo(() => {
     const rand = mulberry32(20260911);
     return Array.from({ length: STAR_COUNT }, (_, i) => {
@@ -95,23 +103,36 @@ export default function AnalyzingView({ stages, goldLine, error, claimProgress, 
           <div className="leading-6 text-gold">
             <span className="text-dim">{STAGE_LINES[Math.min(stages.length, STAGE_LINES.length - 1)].slice(0, 2)}</span>
             {STAGE_LINES[Math.min(stages.length, STAGE_LINES.length - 1)].slice(2)}
+            <span>{".".repeat(dotCount)}</span>
             <span className="animate-blink">▌</span>
           </div>
         )}
         {claimProgress && !goldLine && !error && (
           <div className="truncate text-xs leading-6 text-dim">
-            <span className="text-gold">  └ 正在拆第 {Math.min(claimProgress.done + 1, claimProgress.total)}/{claimProgress.total} 篇：</span>
-            {claimProgress.article}
+            {claimProgress.phase === "fetch" ? (
+              <>
+                <span className="text-gold">  └ 知识接口：</span>
+                {claimProgress.article}
+                {claimProgress.total > 0 && (
+                  <span className="font-mono">（{claimProgress.done}/{claimProgress.total}）</span>
+                )}
+              </>
+            ) : (
+              <>
+                <span className="text-gold">  └ 正在拆第 {Math.min(claimProgress.done + 1, claimProgress.total)}/{claimProgress.total} 篇：</span>
+                {claimProgress.article}
+              </>
+            )}
           </div>
         )}
-        {claimEtaSeconds != null && claimProgress && claimProgress.total > 3 && !goldLine && !error && (
+        {claimEtaSeconds != null && claimProgress?.phase !== "fetch" && claimProgress && claimProgress.total > 3 && !goldLine && !error && (
           <div className="text-xs leading-6 text-dim">
             <span className="text-gold">  └ 预计还需</span>
             {claimEtaSeconds < 90 ? ` ${Math.max(5, Math.round(claimEtaSeconds / 5) * 5)} 秒` : ` 约 ${Math.max(1, Math.round(claimEtaSeconds / 60))} 分钟`}
             <span className="text-gold">（按实测速率）</span>
           </div>
         )}
-        {claimEtaSeconds == null && claimProgress && claimProgress.total > 3 && !goldLine && !error && (
+        {claimEtaSeconds == null && claimProgress?.phase !== "fetch" && claimProgress && claimProgress.total > 3 && !goldLine && !error && (
           <div className="text-xs leading-6 text-dim">
             <span className="text-gold">  └ 预计全程</span>
             {` 约 ${Math.max(1, Math.round((claimProgress.total * 3) / 60))}–${Math.max(2, Math.round((claimProgress.total * 8) / 60))} 分钟`}

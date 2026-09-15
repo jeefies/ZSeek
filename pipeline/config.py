@@ -28,7 +28,7 @@ ZHIDA_THINKING = "zhida-thinking-1p5"  # 簇命名、挖掘理由（少量、质
 SEARCH_COUNT = 10              # 单次搜索上限（接口硬限制 10）
 SEARCH_VARIANTS_DEFAULT = 3    # 子查询变体数（含原标题）
 QA_PAGE_LIMIT = 20             # question_answers 每页条数
-QA_MAX_ITEMS = 200             # 单议题枚举上限（配额 100/日，≤10 次调用）
+QA_MAX_ITEMS = 100             # 单议题枚举上限（配额 100/日：5 次调用，留余量）
 KEEP_CONTENT_TYPE = "Answer"   # 只保留回答，剔除文章
 
 # ---- 直答调用预算 ----

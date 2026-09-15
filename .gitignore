@@ -20,5 +20,9 @@ frontend/.next/
 # 临时文件
 .tmp/
 
+# 会话导出产物（本地留档，不入库）
+kimi-export-*.md
+session-*.zip
+
 # 知乎黑客松官方 Skill 快照（由初始化器管理，不入库）
 .codex/

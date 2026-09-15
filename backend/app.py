@@ -198,14 +198,17 @@ def job_status(key: str) -> dict:
             pos = sum(1 for j in JOBS.values()
                       if j.get("status") == "queued" and j.get("seq", 0) < job.get("seq", 0))
         done, current = _stage_progress(key)
-        # 拆主张阶段才把「当前文章」透给前端（1_search 已落、2_claims 未落时才有效，防早期误显示）
+        # 逐篇进度透给前端：阶段 1 读 1_progress.json（1_search 未落），拆主张读 2_progress.json
         current_article = None
         article_done = None
         article_total = None
-        if job["status"] == "running" and (config.CACHE_DIR / key / "1_search.json").exists() \
-                and not (config.CACHE_DIR / key / "2_claims.json").exists():
-            prog_path = config.CACHE_DIR / key / "2_progress.json"
-            if prog_path.exists():
+        if job["status"] == "running":
+            prog_path = None
+            if not (config.CACHE_DIR / key / "1_search.json").exists():
+                prog_path = config.CACHE_DIR / key / "1_progress.json"
+            elif not (config.CACHE_DIR / key / "2_claims.json").exists():
+                prog_path = config.CACHE_DIR / key / "2_progress.json"
+            if prog_path and prog_path.exists():
                 try:
                     prog = json.loads(prog_path.read_text(encoding="utf-8"))
                     current_article = prog.get("current")
@@ -228,8 +231,12 @@ def job_events(key: str) -> EventSourceResponse:
         for _ in range(600):  # 最长 10 分钟
             status = _job_status(key)
             done, current = _stage_progress(key)
-            # 拆主张逐篇进度：文件在变就推（前端显示「正在拆哪篇」）
+            # 逐篇进度：阶段 1 读 1_progress.json（知识接口），拆主张读 2_progress.json，文件在变就推
             prog_path = config.CACHE_DIR / key / "2_progress.json"
+            phase = "claims"
+            if not (config.CACHE_DIR / key / "1_search.json").exists():
+                prog_path = config.CACHE_DIR / key / "1_progress.json"
+                phase = "fetch"
             if prog_path.exists():
                 try:
                     prog = json.loads(prog_path.read_text(encoding="utf-8"))
@@ -238,7 +245,7 @@ def job_events(key: str) -> EventSourceResponse:
                 if prog and prog != last_prog:
                     last_prog = prog
                     yield {"event": "progress", "data": json.dumps(
-                        {"article": prog.get("current"), "done": prog.get("done"), "total": prog.get("total")},
+                        {"phase": phase, "article": prog.get("current"), "done": prog.get("done"), "total": prog.get("total")},
                         ensure_ascii=False)}
             for s in STAGE_FILES:
                 if s not in emitted and (config.CACHE_DIR / key / s).exists():

@@ -1,15 +1,17 @@
 """知乎官方 API 客户端：搜索（曝光通道）+ 问题回答枚举（枚举通道）+ 额度查询。
 
-实测注意事项（详见 技术方案.md）：
+实测注意事项（详见 知寻-框架手册.md 二.7）：
 - 中文查询必须走 Python httpx，禁止 shell curl（GBK 编码会触发 90001）
 - zhihu_search 每次最多 10 条、HasMore 固定 false，ContentText 为 ~1000 字截断摘要
 - question_answers 文档未记载但可用，深分页，Summary ~200 字，无赞同数
 """
-import json
-import time
 import hashlib
+import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -115,16 +117,36 @@ def default_variants(title: str, n: int = config.SEARCH_VARIANTS_DEFAULT) -> lis
     return variants[: max(n, 3)]
 
 
-def fetch_search_samples(client: ZhihuClient, title: str, variants: list[str]) -> tuple[list[dict[str, Any]], str | None]:
+def fetch_search_samples(
+    client: ZhihuClient,
+    title: str,
+    variants: list[str],
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     """曝光通道：多查询聚合 → 去重 → 只留回答。每个元素是标准化回答 dict。
 
     同时从搜索结果中识别原问题链接（Question 类型条目），供枚举通道使用。
     返回 (回答样本, 问题链接猜测)。
+
+    查询变体间无依赖，线程池并行抓取（撞 30001 限速由 _get 退避兜底）；
+    按变体顺序合并结果，输出与串行版完全一致（确定性）。
     """
+    # 变体并行度：搜索日配额 5000 很宽裕，主要风险是突发限速 30001（退避 15s×3 已兜底）
+    workers = max(1, min(int(os.environ.get("SEARCH_WORKERS", "4")), len(variants) or 1))
+    per_variant: list[list[dict[str, Any]]] = [[] for _ in variants]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(client.zhihu_search, q): i for i, q in enumerate(variants)}
+        done = 0
+        for fut in as_completed(futures):
+            i = futures[fut]
+            per_variant[i] = fut.result()  # 单变体失败同串行语义：直接抛，不重试不吞
+            done += 1
+            if on_progress:
+                on_progress(done, len(variants), f"搜索「{variants[i]}」")
     seen: dict[str, dict[str, Any]] = {}
     question_candidates: list[dict[str, str]] = []
-    for query in variants:
-        for item in client.zhihu_search(query):
+    for i, query in enumerate(variants):
+        for item in per_variant[i]:
             url = str(item.get("Url") or "")
             if "/question/" in url and "/answer/" not in url:
                 question_candidates.append({"title": str(item.get("Title") or ""), "url": url})
@@ -179,13 +201,19 @@ def fetch_search_samples(client: ZhihuClient, title: str, variants: list[str]) -
     return list(seen.values()), guess
 
 
-def enumerate_question(client: ZhihuClient, question_url: str) -> dict[str, Any]:
+def enumerate_question(
+    client: ZhihuClient,
+    question_url: str,
+    on_progress: Callable[[int, int, str], None] | None = None,
+) -> dict[str, Any]:
     """枚举通道：拉取问题回答清单（含短摘要），用于全量叙事与 join 去重。"""
     items: list[dict[str, Any]] = []
     offset = 0
     calls = 0
     is_end = False
     while not is_end and len(items) < config.QA_MAX_ITEMS and calls < config.QA_MAX_ITEMS // config.QA_PAGE_LIMIT + 2:
+        if on_progress:
+            on_progress(len(items), config.QA_MAX_ITEMS, f"枚举回答 {len(items)}/{config.QA_MAX_ITEMS}")
         data = client.question_answers(question_url, config.QA_PAGE_LIMIT, offset)
         page = data.get("Data") or {}
         batch = page.get("Items", [])

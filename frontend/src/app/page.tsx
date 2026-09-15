@@ -19,7 +19,7 @@ export default function Home() {
   const [stages, setStages] = useState<StageEvent[]>([]);
   const [goldLine, setGoldLine] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [claimProgress, setClaimProgress] = useState<{ article: string; done: number; total: number } | null>(null);
+  const [claimProgress, setClaimProgress] = useState<{ phase?: string; article: string; done: number; total: number } | null>(null);
   const [claimEta, setClaimEta] = useState<{ t0: number; d0: number } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [topics, setTopics] = useState<TopicInfo[]>([]);
@@ -82,9 +82,9 @@ export default function Home() {
         setStages((prev) => [...prev.filter((s) => s.stage !== evt.stage), evt]);
       });
       es.addEventListener("progress", (e) => {
-        const p = JSON.parse((e as MessageEvent).data) as { article: string; done: number; total: number };
+        const p = JSON.parse((e as MessageEvent).data) as { phase?: string; article: string; done: number; total: number };
         setClaimProgress(p);
-        setClaimEta((prev) => prev ?? { t0: Date.now(), d0: p.done ?? 0 });
+        if (p.phase !== "fetch") setClaimEta((prev) => prev ?? { t0: Date.now(), d0: p.done ?? 0 });
       });
       es.addEventListener("done", async () => {
         stopEvents();

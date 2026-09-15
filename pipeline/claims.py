@@ -1,7 +1,8 @@
 """LLM 客户端：分层路由。
 
-- 结构化抽取（拆主张/时效/锚点/冲突判定）：**优先智谱 GLM-4.7-Flash**，出错回退
-  阿里云百炼 qwen3.7-flash（实时），最后回退知乎直答 zhida-fast-1p5
+- 结构化抽取（拆主张/时效/锚点/冲突判定/查询扩展）：**优先阿里云百炼 qwen3.7-flash
+  （关思考 enable_thinking=false，短输出抽取任务思考链无收益且慢）**，出错回退
+  智谱 GLM-4.7-Flash，最后回退知乎直答 zhida-fast-1p5
 - 拆主张大流量：走百炼 Batch File（JSONL 上传 → 轮询 → 下载，半价不占实时并发），
   批任务失败自动回退实时链
 - 生成质量任务（簇命名/挖掘理由）：GLM-4.7-Flash → qwen3.7-flash → zhida-thinking-1p5
@@ -197,19 +198,22 @@ def _chat_openai_next(prompt: str, retries: int = 1) -> str:
 
 
 def _chat_compat(base: str, key: str, model: str, prompt: str, retries: int = 1,
-                 timeout: float = 120.0) -> str:
+                 timeout: float = 120.0, extra: dict | None = None) -> str:
     """OpenAI 兼容 chat/completions 通用调用（GLM / 百炼实时共用）。"""
     if not base or not key:
         raise RuntimeError("未配置 BASE_URL / API_KEY")
     url = base if base.rstrip("/").endswith("/chat/completions") else f"{base.rstrip('/')}/chat/completions"
+    body: dict = {"model": model, "temperature": 0.0,
+                  "messages": [{"role": "user", "content": prompt}]}
+    if extra:
+        body.update(extra)
     last_err: Exception | None = None
     for attempt in range(retries + 1):
         try:
             resp = httpx.post(
                 url,
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"model": model, "temperature": 0.0,
-                      "messages": [{"role": "user", "content": prompt}]},
+                json=body,
                 timeout=timeout,
             )
             resp.raise_for_status()
@@ -230,23 +234,26 @@ def _chat_zhipu(prompt: str, retries: int = 1) -> str:
 
 
 def _chat_dashscope(prompt: str, retries: int = 1) -> str:
-    """阿里云百炼 qwen3.7-flash 实时（回退通道；批量走 _dashscope_batch_chat）。"""
+    """阿里云百炼 qwen3.7-flash 实时（回退通道；批量走 _dashscope_batch_chat）。
+
+    关思考（enable_thinking=false）：拆主张是短输出抽取任务，思考链无收益且慢 20 倍。"""
     return _chat_compat(
         os.environ.get("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         os.environ.get("DASHSCOPE_API_KEY", "").strip(),
-        os.environ.get("DASHSCOPE_MODEL", "qwen3.7-flash"), prompt, retries)
+        os.environ.get("DASHSCOPE_MODEL", "qwen3.7-flash"), prompt, retries,
+        extra={"chat_template_kwargs": {"enable_thinking": False}})
 
 
 def chat_extract(prompt: str, zhida_fallback: ZhidaClient | None = None) -> str:
-    """抽取级调用：GLM-4.7-Flash → qwen3.7-flash → 知乎直答。"""
+    """抽取级调用：qwen3.7-flash（关思考）→ GLM-4.7-Flash → 知乎直答。"""
     try:
-        return _chat_zhipu(prompt)
+        return _chat_dashscope(prompt)
     except RuntimeError:
         pass
     try:
-        return _chat_dashscope(prompt)
+        return _chat_zhipu(prompt)
     except RuntimeError as e:
-        print(f"  [提示] GLM/qwen 均不可用，回退直答: {e}")
+        print(f"  [提示] qwen/GLM 均不可用，回退直答: {e}")
         client = zhida_fallback or ZhidaClient()
         return client.chat(config.ZHIDA_FAST, prompt)
 
@@ -274,6 +281,7 @@ def _dashscope_batch_chat(prompts: list[str], cache_dir: Path | None) -> list[st
             json.dumps({
                 "custom_id": f"req-{i}", "method": "POST", "url": "/v1/chat/completions",
                 "body": {"model": model, "temperature": 0.0, "max_tokens": 8192,
+                         "chat_template_kwargs": {"enable_thinking": False},
                          "messages": [{"role": "user", "content": p}]},
             }, ensure_ascii=False)
             for i, p in enumerate(prompts)
@@ -525,7 +533,7 @@ QUERY_EXPAND_PROMPT = """用户想在知乎上收集「{title}」这个问题下
 
 
 def expand_queries(title: str, n: int = 5) -> list[str] | None:
-    """LLM 扩展子查询（glm-4-air）；失败返回 None 由调用方回退规则变体。"""
+    """LLM 扩展子查询（走 chat_extract 抽取链）；失败返回 None 由调用方回退规则变体。"""
     try:
         parsed = _extract_json(chat_extract(QUERY_EXPAND_PROMPT.format(title=title)))
         queries = [str(q).strip() for q in parsed.get("queries", []) if str(q).strip()]

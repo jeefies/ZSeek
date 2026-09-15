@@ -158,6 +158,43 @@ def test_evergreen_time_upgrade():
     assert _YEAR_PATTERN.search(text2)
 
 
+def test_search_variants_merge_parallel():
+    """多查询变体并行抓取：按变体顺序合并、跨变体去重、从回答 URL 反推问题链接（假客户端，无网络）。"""
+    from pipeline.fetch import fetch_search_samples
+
+    class _FakeClient:
+        def zhihu_search(self, query, count=10):
+            if query == "近视手术安全吗":
+                return [
+                    {"Url": "https://www.zhihu.com/question/1234/answer/1", "ContentType": "Answer",
+                     "ContentID": "a1", "Title": "近视手术安全吗", "ContentText": "t1",
+                     "VoteUpCount": 10, "CommentCount": 1, "AuthorName": "甲", "EditTime": 1},
+                    {"Url": "https://www.zhihu.com/question/1234/answer/2", "ContentType": "Answer",
+                     "ContentID": "a2", "Title": "近视手术安全吗", "ContentText": "t2",
+                     "VoteUpCount": 5, "CommentCount": 0, "AuthorName": "乙", "EditTime": 2},
+                ]
+            return [
+                # 与变体 1 重叠的 a1：应被去重，且保留先出现变体的字段
+                {"Url": "https://www.zhihu.com/question/1234/answer/1", "ContentType": "Answer",
+                 "ContentID": "a1", "Title": "近视手术安全吗", "ContentText": "t1dup",
+                 "VoteUpCount": 99, "CommentCount": 9, "AuthorName": "甲", "EditTime": 1},
+                {"Url": "https://www.zhihu.com/question/1234/answer/3", "ContentType": "Article",
+                 "ContentID": "x", "Title": "文章", "ContentText": "t", "VoteUpCount": 0,
+                 "CommentCount": 0, "AuthorName": "", "EditTime": 0},  # 非回答，剔除
+                {"Url": "https://www.zhihu.com/question/1234/answer/4", "ContentType": "Answer",
+                 "ContentID": "a3", "Title": "近视手术安全吗", "ContentText": "t3",
+                 "VoteUpCount": 1, "CommentCount": 0, "AuthorName": "丙", "EditTime": 3},
+            ]
+
+    samples, guess = fetch_search_samples(_FakeClient(), "近视手术安全吗",
+                                          ["近视手术安全吗", "近视手术 经验 靠谱吗"])
+    # 变体顺序合并：a1/a2 来自变体 1，a3 来自变体 2；a1 去重后保留变体 1 的 10 赞
+    assert [s["content_id"] for s in samples] == ["a1", "a2", "a3"]
+    assert samples[0]["votes"] == 10
+    # 无 Question 条目时从回答 URL 反推问题链接
+    assert guess == "https://www.zhihu.com/question/1234"
+
+
 def test_cluster_shapes():
     import numpy as np
     rng = np.random.default_rng(0)

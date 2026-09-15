@@ -71,14 +71,25 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
         print(f"[1/6] 抓取（缓存）：样本 {len(stage1['samples'])} 篇")
     else:
         check_quota(client)
+        # 阶段 1 进度文件：供状态接口/SSE 展示「正在查哪个查询/枚举到哪页」（完成即删）
+        fetch_prog_path = config.CACHE_DIR / key / "1_progress.json"
+
+        def _fetch_progress(done: int, total: int, current: str) -> None:
+            try:
+                fetch_prog_path.write_text(json.dumps(
+                    {"done": done, "total": total, "current": current}, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass  # 进度文件 best-effort，绝不影响抓取主流程
+
         variants_llm = None
         if not no_llm:
             print("[1/6] 抓取：LLM 扩展子查询…")
+            _fetch_progress(0, 0, "LLM 扩展搜索查询…")
             variants_llm = expand_queries(title)
         # 模板变体与 LLM 变体并行（搜索无翻页，只有多查询能扩大召回）
         variants = list(dict.fromkeys([title, *(variants_llm or []), *default_variants(title)]))
         print(f"[1/6] 抓取：搜索通道 {len(variants)} 个查询变体…")
-        samples, question_guess = fetch_search_samples(client, title, variants)
+        samples, question_guess = fetch_search_samples(client, title, variants, on_progress=_fetch_progress)
         print(f"      搜索去重后样本 {len(samples)} 篇回答")
         if not question_url and question_guess:
             question_url = question_guess
@@ -87,7 +98,7 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
         if question_url:
             print(f"      枚举通道：{question_url}")
             try:
-                enumeration = enumerate_question(client, question_url)
+                enumeration = enumerate_question(client, question_url, on_progress=_fetch_progress)
             except Exception as e:  # noqa: BLE001 - 枚举是增强通道，失败仅用搜索样本继续
                 print(f"      枚举通道不可用（{e}），跳过")
             if enumeration:
@@ -97,6 +108,7 @@ def run(title: str, question_url: str | None, topn: int, force: bool, no_llm: bo
                       f"{'已取完' if enumeration['is_end'] else '截断'}）")
         stage1 = {"title": title, "question_url": question_url, "samples": samples, "enumeration": enumeration, "variants": variants}
         save_cache(key, "1_search", stage1)
+        fetch_prog_path.unlink(missing_ok=True)  # 阶段完成即清，避免下一轮误显示
 
     samples = stage1["samples"]
 
