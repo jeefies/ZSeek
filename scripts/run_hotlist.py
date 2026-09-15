@@ -59,6 +59,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=30, help="热榜拉取条数（接口实测上限 30）")
     ap.add_argument("--only", default=None, help="只跑标题含此关键词的议题")
     ap.add_argument("--qa-max-items", type=int, default=None, help="强制单议题枚举上限（默认按额度自适应）")
+    ap.add_argument("--search-only", action="store_true", help="纯搜索通道：不耗 question_answers 额度（枚举留给 enrich_enumeration 后补）")
     args = ap.parse_args()
 
     client = ZhihuClient()
@@ -91,7 +92,10 @@ def main() -> None:
         print("没有待跑议题。")
         return
 
-    if args.qa_max_items is not None:
+    if args.search_only:
+        config.QA_MAX_ITEMS = 0
+        print("枚举上限：0（--search-only 纯搜索通道，枚举由 enrich_enumeration 后补）")
+    elif args.qa_max_items is not None:
         config.QA_MAX_ITEMS = args.qa_max_items
         print(f"枚举上限：强制 {config.QA_MAX_ITEMS} 条/议题")
     else:
