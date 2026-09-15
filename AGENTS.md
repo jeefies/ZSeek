@@ -23,7 +23,7 @@ M(问题) = Top3 曝光占比 − Top3 稀有度加权主张占比   # 垄断度
 
 - **conda 环境 `ZhiSeek`（python 3.12）**：`conda activate ZhiSeek`。所有 python 命令从仓库根目录跑（模块路径 `pipeline.*`，脚本自行把根目录插入 `sys.path`）。系统 python 没有 numpy/umap/hdbscan，跑不了。
 - 分析 pipeline：`python -m pipeline.run "近视手术安全吗" [--question-url URL] [--topn 10] [--force] [--no-llm]`（`--no-llm` 的主张=整段摘要，仅调试用）
-- 战役脚本：`python scripts/collect_stage0.py`（18 议题阶段 1 采集，断点续跑）→ `python scripts/run_campaign.py [--only 关键词]`（全量跑+垄断榜）
+- 战役脚本：`python scripts/collect_stage0.py`（18 议题阶段 1 采集，断点续跑）→ `python scripts/run_campaign.py [--only 关键词]`（全量跑+垄断榜）；热榜批量：`python scripts/run_hotlist.py [--limit 30]`（拉热榜全量跑，question_answers 额度自适应分页、断点续跑、并入垄断榜，元数据 `data/campaign/hotlist_meta.jsonl`）
 - 测试：`pytest tests/`（全部合成数据，**不耗 API 额度**）；单测：`pytest tests/test_smoke.py::test_score_synthetic`
 - 后端：`python -m uvicorn backend.app:app --port 8000`；前端：`cd frontend && npm run dev`（3000 端口）
 - `data/` 整个目录 gitignored（可再生缓存+战役产物，git 里没有）；`.env` 在 `.gitignore`
